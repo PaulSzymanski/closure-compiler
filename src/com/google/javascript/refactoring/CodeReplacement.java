@@ -16,13 +16,13 @@
 
 package com.google.javascript.refactoring;
 
-import com.google.auto.value.AutoValue;
+//import com.google.auto.value.AutoValue;
 import com.google.auto.value.AutoValue.CopyAnnotations;
 import com.google.errorprone.annotations.Immutable;
 import java.util.Comparator;
 
 /** Class that represents a set of changes to make to the code. */
-@AutoValue
+//@AutoValue
 @CopyAnnotations
 @Immutable
 public abstract class CodeReplacement implements Comparable<CodeReplacement> {
@@ -32,7 +32,7 @@ public abstract class CodeReplacement implements Comparable<CodeReplacement> {
   }
 
   static CodeReplacement create(int startPosition, int length, String newContent, String sortKey) {
-    return new AutoValue_CodeReplacement(startPosition, length, newContent, sortKey);
+    return null; // new AutoValue_CodeReplacement(startPosition, length, newContent, sortKey);
   }
 
   /**

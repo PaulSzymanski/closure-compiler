@@ -23,6 +23,7 @@ import static java.lang.Math.min;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import java.io.PrintWriter;
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
@@ -36,6 +37,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.io.ByteStreams;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
 import com.google.javascript.jscomp.CompilerOptions.JsonStreamMode;
@@ -43,6 +45,9 @@ import com.google.javascript.jscomp.CompilerOptions.OutputJs;
 import com.google.javascript.jscomp.CompilerOptions.TweakProcessing;
 import com.google.javascript.jscomp.deps.ModuleLoader;
 import com.google.javascript.jscomp.deps.SourceCodeEscapers;
+import com.google.javascript.jscomp.graph.DiGraph;
+import com.google.javascript.jscomp.graph.Graph.GraphEdge;
+import com.google.javascript.jscomp.graph.GraphNode;
 import com.google.javascript.jscomp.ijs.IjsErrors;
 import com.google.javascript.rhino.Node;
 import com.google.javascript.rhino.StaticSourceFile.SourceKind;
@@ -1137,7 +1142,7 @@ public abstract class AbstractCommandLineRunner<A extends Compiler,
       this.defaultJsOutput.flush();
       return 0;
     }
-
+    long startTime = System.nanoTime();
     Compiler.setLoggingLevel(Level.parse(config.loggingLevel));
 
     compiler = createCompiler();
@@ -1269,7 +1274,89 @@ public abstract class AbstractCommandLineRunner<A extends Compiler,
       }
     }
 
-    return processResults(result, modules, options);
+    CallGraph cg = new CallGraph(compiler);
+    long beforeUsedMem=Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory();
+    cg.process(compiler.externsRoot, compiler.jsRoot);
+
+    PrintWriter cfgFile = new PrintWriter(new File("cfg.json"));
+
+    DiGraph<CallGraph.Function, CallGraph.Callsite> fDiGraph = cg.getForwardDirectedGraph();
+    long id = 1;
+    CGExportEntity jsonEntity = new CGExportEntity();
+    jsonEntity.setNodes(new ArrayList<>());
+    jsonEntity.setLinks(new ArrayList<>());
+    Map<GraphNode<CallGraph.Function, CallGraph.Callsite>, Long> nodeIdMap = new HashMap<>();
+    Set<CGEdgeData> edgeSet = new HashSet<>();
+
+    for (GraphEdge<CallGraph.Function, CallGraph.Callsite> edge : fDiGraph.getEdges()) {
+        CGEdgeData eData = new CGEdgeData();
+        eData.setLabel(probeResolvingSiteName(edge, true) + " -> " + probeResolvingSiteName(edge, false));
+        GraphNode<CallGraph.Function, CallGraph.Callsite> nodeA = edge.getNodeA();
+        GraphNode<CallGraph.Function, CallGraph.Callsite> nodeB = edge.getNodeB();
+        if (nodeIdMap.putIfAbsent(nodeA, id) == null) {
+            CGNodeData nData = new CGNodeData();
+            nData.setId(id++);
+            nData.setLabel(
+                    "{main}".equals(nodeA.getValue().getName()) ? "[toplevel]" : "[" + nodeA.getValue().getAstNode().getSourceFileName() + "]" + nodeA.getValue().getName());
+            nData.setPos("[toplevel]".equals(nData.getLabel()) ? "toplevel:1:1" :
+                nodeA.getValue().getAstNode().getSourceFileName() + ":"
+                    + nodeA.getValue().getAstNode().getLineno() + ":"
+                    + (nodeA.getValue().getAstNode().getCharno() + 1));
+            jsonEntity.getNodes().add(nData);
+        }
+        if (nodeIdMap.putIfAbsent(nodeB, id) == null) {
+            CGNodeData nData = new CGNodeData();
+            nData.setId(id++);
+            nData.setLabel(
+                    "{main}".equals(nodeB.getValue().getName()) ? "[toplevel]" : "[" + nodeB.getValue().getAstNode().getSourceFileName() + "]" + nodeB.getValue().getName());
+            nData.setPos("[toplevel]".equals(nData.getLabel()) ? "toplevel:1:1" :
+                nodeB.getValue().getAstNode().getSourceFileName() + ":"
+                    + nodeB.getValue().getAstNode().getLineno() + ":"
+                    + (nodeB.getValue().getAstNode().getCharno() + 1));
+            jsonEntity.getNodes().add(nData);
+        }
+
+        long a = nodeIdMap.get(nodeA);
+        long b = nodeIdMap.get(nodeB);
+        eData.setSource(a);
+        eData.setTarget(b);
+
+        if (!edgeSet.contains(eData)) {
+            edgeSet.add(eData);
+            jsonEntity.getLinks().add(eData);
+        }
+    }
+
+    Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+    cfgFile.print(gson.toJson(jsonEntity));
+    cfgFile.close();
+
+    long afterUsedMem=Runtime.getRuntime().totalMemory()-Runtime.getRuntime().freeMemory();
+    long actualMemUsed=afterUsedMem-beforeUsedMem;
+
+    int retCode = processResults(result, modules, options);
+
+    long stopTime = System.nanoTime();
+    long elapsedTime = stopTime - startTime;
+
+    System.out.println("Nodes: " + jsonEntity.getNodes().size());
+    System.out.println("Edges: " + jsonEntity.getLinks().size());
+    System.out.println("Mem: " + actualMemUsed);
+    System.out.println("Time: " + elapsedTime);
+
+    return retCode;
+  }
+
+  private String probeResolvingSiteName(GraphEdge<CallGraph.Function, CallGraph.Callsite> edge, boolean a) {
+        String res = "";
+        if (a) {
+            res += edge.getNodeA().getValue().getName();
+        } else {
+            res += edge.getNodeB().getValue().getName() == null ? "ANONYMOUS" : edge.getNodeB().getValue().getName();
+        }
+
+        return res.equals("{main}") ? "[toplevel]" : "[" + (a ? edge.getNodeA().getValue().getAstNode().getSourceFileName() : edge.getNodeB().getValue().getAstNode().getSourceFileName()) + "]" + res;
+
   }
 
   @GwtIncompatible("Unnecessary")
